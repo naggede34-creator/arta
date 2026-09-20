@@ -1,8 +1,9 @@
 {
-    "main_message": "",
     "main_messages": [],
     "forward_messages": [],
     "current_msg_index": 0,
     "target_groups": [],
-    "is_auto_active": false
+    "is_auto_active": false,
+    "admin_mode": true,
+    "notes": {}
 }

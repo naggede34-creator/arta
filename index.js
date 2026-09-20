@@ -1,12 +1,6 @@
 /**
  * Telegram Userbot — Auto Post & Forward
  * Node.js + GramJS (MTProto)
- *
- * Fitur:
- *  - Auto post pesan teks ke banyak grup (rotasi)
- *  - Auto forward pesan channel ke banyak grup + reply otomatis
- *  - Jam operasional (berhenti 00:00–03:00 WIB)
- *  - Perintah lengkap via Telegram
  */
 
 require('dotenv').config();
@@ -24,15 +18,68 @@ const API_ID    = parseInt(process.env.API_ID  || '0', 10);
 const API_HASH  = process.env.API_HASH          || '';
 const SESSION_FILE = path.join(__dirname, 'session.txt');
 const CONFIG_FILE  = path.join(__dirname, 'bot_config.json');
+const NOTES_DIR    = path.join(__dirname, 'notes_media');
 
 const REPLY_CMDS = [
     '/sharemsg', '/sharemsg2', '/sharemsg3',
     '/broadcast', '/broadcast2', '/broadcast3'
 ];
 
-const REPLY_INTERVAL_MS = 60  * 1000;   // 60 detik
+const REPLY_INTERVAL_MS = 60  * 1000;
 const MIN_CYCLE_MS      = 20  * 60 * 1000;
 const MAX_CYCLE_MS      = 25  * 60 * 1000;
+
+// Pesan offline admin (acak saat dikirim)
+const OFFLINE_MSGS = [
+    "╔══════════════════════════════╗\n" +
+    "║  🔴  A D M I N  O F F L I N E  ║\n" +
+    "╚══════════════════════════════╝\n\n" +
+    "😴 Haii~ Admin lagi **istirahat** dulu ya!\n" +
+    "Lagi ngisi ulang energi, bentar lagi balik kok 🔋\n\n" +
+    "📩 Pesanmu udah kerekam kok, tenang~\n" +
+    "Nanti pasti dibalas pas udah online!\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "⚠️ **Mohon jangan spam ya!**\n" +
+    "Kirim lebih dari **5 pesan** = 🚫 **auto diblokir**\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━",
+
+    "╔══════════════════════════════╗\n" +
+    "║  🔴  A D M I N  O F F L I N E  ║\n" +
+    "╚══════════════════════════════╝\n\n" +
+    "💼 Admin lagi **super sibuk** nih!\n" +
+    "Banyak urusan numpuk yang harus dibereskan dulu 📋\n\n" +
+    "📬 Pesanmu udah masuk & akan segera dibalas!\n" +
+    "Sabar ya ditunggu sebentar lagi 🙏\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "⚠️ **Jangan spam!** Kalau kirim >5 pesan\n" +
+    "bakal langsung 🚫 **diblokir otomatis** lho~\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━",
+
+    "╔══════════════════════════════╗\n" +
+    "║  🔴  A D M I N  O F F L I N E  ║\n" +
+    "╚══════════════════════════════╝\n\n" +
+    "🌙 Zzz... Admin lagi **tidur** nih!\n" +
+    "Lagi mimpi indah, jangan digangguin dulu ya 😴💤\n\n" +
+    "🌅 Bentar lagi bangun kok & langsung bales pesan!\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "⚠️ **No spam!** Yang spam lebih dari 5 pesan\n" +
+    "akan otomatis kena **blok permanen** 🚫\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━",
+
+    "╔══════════════════════════════╗\n" +
+    "║  🔴  A D M I N  O F F L I N E  ║\n" +
+    "╚══════════════════════════════╝\n\n" +
+    "🏃 Admin lagi ada **urusan penting** di luar!\n" +
+    "Sebentar lagi balik & langsung cek pesan 📲\n\n" +
+    "✅ Semua pesan masuk, jangan khawatir!\n\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+    "⚠️ **Satu hal:** Spam lebih dari 5x?\n" +
+    "Sistem langsung 🚫 **blok otomatis** ya!\n" +
+    "━━━━━━━━━━━━━━━━━━━━━━━━━"
+];
+
+// Spam counter (in-memory, reset saat restart)
+const spamCount = new Map();
 
 // ─────────────────────────────────────────────────────────
 // HELPERS
@@ -64,7 +111,9 @@ function loadConfig() {
         forward_messages: [],
         current_msg_index: 0,
         target_groups: [],
-        is_auto_active: false
+        is_auto_active: false,
+        admin_mode: true,
+        notes: {}
     };
     if (!fs.existsSync(CONFIG_FILE)) {
         fs.writeFileSync(CONFIG_FILE, JSON.stringify(def, null, 4));
@@ -76,6 +125,8 @@ function loadConfig() {
         if (!Array.isArray(d.forward_messages)) d.forward_messages = [];
         if (!Array.isArray(d.target_groups))    d.target_groups    = [];
         if (typeof d.current_msg_index !== 'number') d.current_msg_index = 0;
+        if (typeof d.admin_mode !== 'boolean')   d.admin_mode   = true;
+        if (!d.notes || typeof d.notes !== 'object') d.notes    = {};
         return d;
     } catch (e) {
         console.error('Gagal baca config:', e.message);
@@ -106,6 +157,35 @@ async function editMsg(client, msg, text) {
         });
     } catch (e) {
         console.error('editMessage gagal:', e.message);
+    }
+}
+
+// ─────────────────────────────────────────────────────────
+// SEND NOTE
+// ─────────────────────────────────────────────────────────
+async function sendNote(client, msg, noteName) {
+    const notes = cfg.notes || {};
+    const note  = notes[noteName];
+    if (!note) {
+        return editMsg(client, msg,
+            `╔══ ❌ NOTE TIDAK ADA ══╗\n\nNote \`${noteName}\` tidak ditemukan.\nCek via \`/listnote\`.\n\n╚══════════════════════╝`
+        );
+    }
+
+    // Hapus pesan perintah
+    try { await client.deleteMessages(msg.chatId, [msg.id], { revoke: true }); } catch (_) {}
+
+    if (note.has_media && note.media_path && fs.existsSync(note.media_path)) {
+        await client.sendFile(msg.chatId, {
+            file:      note.media_path,
+            caption:   note.text || '',
+            parseMode: 'md'
+        });
+    } else if (note.text) {
+        await client.sendMessage(msg.chatId, {
+            message:   note.text,
+            parseMode: 'md'
+        });
     }
 }
 
@@ -149,13 +229,11 @@ async function autoPostLoop(client) {
                         try {
                             let sentMsgId = null;
 
-                            // ── Kirim pesan teks ──────────────────────
                             if (item.type === 'text') {
                                 const sent = await client.sendMessage(chatId, { message: item.content });
                                 sentMsgId = sent.id;
                                 console.log(`✅ Teks #${idx + 1} terkirim ke ${chatId}`);
 
-                            // ── Forward pesan ─────────────────────────
                             } else {
                                 const fw = item.content;
                                 try {
@@ -168,7 +246,6 @@ async function autoPostLoop(client) {
                                         })
                                     );
 
-                                    // Ambil ID pesan yang di-forward
                                     if (updates?.updates) {
                                         for (const u of updates.updates) {
                                             if (u.className === 'UpdateMessageID') { sentMsgId = u.id; break; }
@@ -185,7 +262,6 @@ async function autoPostLoop(client) {
                                 }
                             }
 
-                            // ── Reply otomatis ────────────────────────
                             if (sentMsgId) {
                                 for (const replyCmd of REPLY_CMDS) {
                                     if (!cfg.is_auto_active || isNightTime()) break;
@@ -221,7 +297,6 @@ async function autoPostLoop(client) {
                         }
                     }
 
-                    // Rotasi ke item berikutnya
                     cfg.current_msg_index = (idx + 1) % pool.length;
                     saveConfig();
                     console.log(`🔄 Siklus selesai. Berikutnya: #${cfg.current_msg_index + 1}`);
@@ -240,7 +315,7 @@ async function autoPostLoop(client) {
 }
 
 // ─────────────────────────────────────────────────────────
-// COMMAND HANDLERS
+// COMMAND HANDLERS (outgoing — hanya dari akun sendiri)
 // ─────────────────────────────────────────────────────────
 async function handleCommand(client, msg) {
     const text = msg.message || '';
@@ -353,7 +428,6 @@ async function handleCommand(client, msg) {
             const fwList  = cfg.forward_messages;
             const label   = argText || `Pesan Forward #${fwList.length + 1}`;
 
-            // Ambil info asal forward
             let fromChatId   = Number(msg.chatId);
             let fromChatName = 'Unknown';
             if (reply.fwdFrom?.fromId) {
@@ -482,6 +556,192 @@ async function handleCommand(client, msg) {
             return editMsg(client, msg, res);
         }
 
+        // ─── ADMIN MODE ──────────────────────────────────────────
+        case 'admin': {
+            const mode = (args[0] || '').toLowerCase();
+            if (!mode) {
+                const st = cfg.admin_mode ? "🟢 **ONLINE**" : "🔴 **OFFLINE**";
+                return editMsg(client, msg,
+                    "╔══ 👤 MODE ADMIN ══╗\n\n" +
+                    `Status: ${st}\n\n` +
+                    "`/admin on`  → Admin online (balas manual)\n" +
+                    "`/admin off` → Admin offline (auto-reply aktif)\n\n" +
+                    "ℹ️ Kalau offline, siapapun yang chat\nDM akan dapat balasan otomatis.\n" +
+                    "Spam >5 pesan = auto-blok 🚫\n\n" +
+                    "╚══════════════════╝"
+                );
+            }
+            if (mode === 'on') {
+                cfg.admin_mode = true;
+                spamCount.clear();
+                saveConfig();
+                return editMsg(client, msg,
+                    "╔══ 🟢 ADMIN ONLINE ══╗\n\n" +
+                    "✅ Mode admin **ONLINE** diaktifkan!\n\n" +
+                    "💬 Auto-reply offline telah dimatikan.\n" +
+                    "🔓 Semua blokir spam direset.\n\n" +
+                    "╚════════════════════╝"
+                );
+            }
+            if (mode === 'off') {
+                cfg.admin_mode = false;
+                saveConfig();
+                return editMsg(client, msg,
+                    "╔══ 🔴 ADMIN OFFLINE ══╗\n\n" +
+                    "✅ Mode admin **OFFLINE** diaktifkan!\n\n" +
+                    "🤖 Bot akan **auto-reply** ke siapapun\n" +
+                    "   yang DM saat kamu offline.\n\n" +
+                    "🚫 Spam lebih dari **5 pesan** akan\n" +
+                    "   langsung **diblokir otomatis**!\n\n" +
+                    "╚═════════════════════╝"
+                );
+            }
+            return editMsg(client, msg,
+                "╔══ ⚠️ SALAH ══╗\n\nGunakan `/admin on` atau `/admin off`\n\n╚════════════╝"
+            );
+        }
+
+        // ─── NOTE MANAGER ─────────────────────────────────────────
+        case 'addnote': {
+            if (!argText) {
+                return editMsg(client, msg,
+                    "╔══ ⚠️ FORMAT SALAH ══╗\n\n" +
+                    "📌 Cara pakai:\n`/addnote <nama>` *(sambil reply pesan/foto)*\n\n" +
+                    "📝 Contoh:\n" +
+                    "`/addnote qris` ← reply ke foto QRIS\n" +
+                    "`/addnote info` ← reply ke teks info\n\n" +
+                    "💡 Kirim note dengan: `/<nama>`\n\n" +
+                    "╚══════════════════╝"
+                );
+            }
+
+            const reply = await msg.getReplyMessage();
+            if (!reply) {
+                return editMsg(client, msg,
+                    "╔══ ❌ HARUS REPLY ══╗\n\n" +
+                    "Reply ke pesan/foto yang ingin disimpan,\n" +
+                    "lalu ketik `/addnote <nama>`!\n\n" +
+                    "╚════════════════════╝"
+                );
+            }
+
+            const noteName = argText.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            const notes    = cfg.notes || {};
+
+            let noteData = { text: null, has_media: false, media_path: null };
+
+            if (reply.message) noteData.text = reply.message;
+
+            if (reply.photo || reply.document || reply.sticker) {
+                if (!fs.existsSync(NOTES_DIR)) fs.mkdirSync(NOTES_DIR, { recursive: true });
+
+                let ext = 'jpg';
+                if (reply.document?.mimeType) {
+                    ext = reply.document.mimeType.split('/')[1] || 'bin';
+                }
+
+                const filePath = path.join(NOTES_DIR, `${noteName}.${ext}`);
+                await editMsg(client, msg, "⏳ Mengunduh media...");
+
+                try {
+                    const buffer = await client.downloadMedia(reply, {});
+                    if (buffer && buffer.length > 0) {
+                        fs.writeFileSync(filePath, buffer);
+                        noteData.has_media  = true;
+                        noteData.media_path = filePath;
+                    }
+                } catch (dlErr) {
+                    console.error('Gagal download media:', dlErr.message);
+                }
+            }
+
+            if (!noteData.text && !noteData.has_media) {
+                return editMsg(client, msg,
+                    "╔══ ❌ PESAN KOSONG ══╗\n\n" +
+                    "Pesan yang di-reply tidak punya teks atau media!\n\n" +
+                    "╚══════════════════════╝"
+                );
+            }
+
+            notes[noteName] = noteData;
+            cfg.notes = notes;
+            saveConfig();
+
+            const txtPrev = noteData.text
+                ? (noteData.text.length > 80 ? noteData.text.slice(0, 80) + '...' : noteData.text)
+                : null;
+
+            return editMsg(client, msg,
+                `╔══ ✅ NOTE '${noteName}' DISIMPAN ══╗\n\n` +
+                (txtPrev ? `📝 **Teks:** ${txtPrev}\n` : '') +
+                (noteData.has_media ? `🖼️ **Media:** ✅ Tersimpan\n` : '') +
+                `\n💡 Kirim dengan: **/${noteName}**\n\n` +
+                "╚══════════════════════════╝"
+            );
+        }
+
+        case 'listnote': {
+            const notes = cfg.notes || {};
+            const keys  = Object.keys(notes);
+            if (!keys.length) {
+                return editMsg(client, msg,
+                    "╔══ 📭 KOSONG ══╗\n\n" +
+                    "Belum ada note tersimpan.\n\n" +
+                    "📌 Cara tambah:\nReply pesan/foto lalu ketik\n`/addnote <nama>`\n\n" +
+                    "╚══════════════╝"
+                );
+            }
+            let res = "╔══ 📋 DAFTAR NOTE ══╗\n\n";
+            keys.forEach((k, i) => {
+                const n       = notes[k];
+                const typeTag = n.has_media ? (n.text ? '📸+📝' : '🖼️') : '📝';
+                res += `**${i + 1}.** \`/${k}\` ${typeTag}\n`;
+                if (n.text) {
+                    const preview = n.text.length > 50 ? n.text.slice(0, 50) + '...' : n.text;
+                    res += `    ${preview}\n`;
+                }
+                res += '\n';
+            });
+            res += `📊 Total: \`${keys.length}\` note\n`;
+            res += "╚══════════════════╝";
+            return editMsg(client, msg, res);
+        }
+
+        case 'delnote': {
+            if (!argText) {
+                return editMsg(client, msg,
+                    "╔══ ⚠️ FORMAT SALAH ══╗\n\n📌 Cara pakai: `/delnote <nama>`\n📋 Cek: `/listnote`\n\n╚══════════════════╝"
+                );
+            }
+            const noteName = argText.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            const notes    = cfg.notes || {};
+            if (!notes[noteName]) {
+                return editMsg(client, msg,
+                    `╔══ ❌ TIDAK DITEMUKAN ══╗\n\nNote \`${noteName}\` tidak ada.\nCek via \`/listnote\`.\n\n╚══════════════════════╝`
+                );
+            }
+            const n = notes[noteName];
+            if (n.has_media && n.media_path && fs.existsSync(n.media_path)) {
+                try { fs.unlinkSync(n.media_path); } catch (_) {}
+            }
+            delete notes[noteName];
+            cfg.notes = notes;
+            saveConfig();
+            return editMsg(client, msg,
+                `╔══ 🗑️ NOTE DIHAPUS ══╗\n\n✅ Note \`${noteName}\` berhasil dihapus.\n\n╚═══════════════════╝`
+            );
+        }
+
+        case 'note': {
+            if (!argText) {
+                return editMsg(client, msg,
+                    "╔══ ⚠️ FORMAT SALAH ══╗\n\n📌 Cara pakai: `/note <nama>`\n💡 Atau langsung: `/<nama>`\n\n╚══════════════════╝"
+                );
+            }
+            const noteName = argText.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+            return sendNote(client, msg, noteName);
+        }
+
         // ─── KONTROL ─────────────────────────────────────────────
         case 'auto': {
             const mode = (args[0] || '').toLowerCase();
@@ -512,7 +772,9 @@ async function handleCommand(client, msg) {
         case 'status': {
             const pool     = buildPool();
             const isActive = cfg.is_auto_active ? "🟢 AKTIF" : "🔴 NON-AKTIF";
+            const adminSt  = cfg.admin_mode      ? "🟢 ONLINE" : "🔴 OFFLINE";
             const modeStr  = isNightTime() ? "🌙 Jam Tidur" : "☀️ Jam Kerja";
+            const noteCount = Object.keys(cfg.notes || {}).length;
 
             let nextInfo = "—";
             if (pool.length > 0) {
@@ -527,6 +789,7 @@ async function handleCommand(client, msg) {
                 "╔══ ⚙️ STATUS USERBOT ══╗\n" +
                 "━━━━━━━━━━━━━━━━━━━━\n" +
                 `🤖 Auto Post    : **${isActive}**\n` +
+                `👤 Mode Admin   : **${adminSt}**\n` +
                 `🕐 Waktu WIB    : ${wibTimeStr()}\n` +
                 `🌤️ Mode         : ${modeStr}\n` +
                 `⏰ Operasional  : 03:00 – 00:00 WIB\n` +
@@ -536,6 +799,7 @@ async function handleCommand(client, msg) {
                 `🔄 Pool Total   : \`${pool.length}\` item\n` +
                 `🎯 Berikutnya   : ${nextInfo}\n` +
                 `👥 Grup Target  : \`${cfg.target_groups.length}\` grup\n` +
+                `📋 Note         : \`${noteCount}\` tersimpan\n` +
                 "━━━━━━━━━━━━━━━━━━━━\n" +
                 `⏱️ Jeda Reply   : **60 detik**\n` +
                 `⏱️ Jeda Siklus  : **20–25 menit**\n` +
@@ -559,6 +823,14 @@ async function handleCommand(client, msg) {
                 "• `/addpesanfw [label]` — Simpan forward *(reply ke pesan forward)*\n" +
                 "• `/listpesanfw` — Lihat semua pesan forward\n" +
                 "• `/delpesanfw <no>` — Hapus pesan forward\n\n" +
+                "**👤 MODE ADMIN:**\n" +
+                "• `/admin off` — Offline (auto-reply + anti-spam aktif)\n" +
+                "• `/admin on` — Online (matikan auto-reply)\n\n" +
+                "**📋 NOTE MANAGER:**\n" +
+                "• `/addnote <nama>` — Simpan note *(reply pesan/foto)*\n" +
+                "• `/listnote` — Lihat semua note\n" +
+                "• `/delnote <nama>` — Hapus note\n" +
+                "• `/<nama>` — Kirim note (misal `/qris`)\n\n" +
                 "**👥 GRUP TARGET:**\n" +
                 "• `/addgb` — Tambah grup saat ini\n" +
                 "• `/delgb` — Hapus grup saat ini\n" +
@@ -571,6 +843,81 @@ async function handleCommand(client, msg) {
                 "╚══════════════════════════════╝"
             );
         }
+
+        default: {
+            // Dynamic note command: /qris → kirim note bernama 'qris'
+            const notes = cfg.notes || {};
+            if (notes[rawCmd]) {
+                return sendNote(client, msg, rawCmd);
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────
+// INCOMING MESSAGE HANDLER (admin offline auto-reply)
+// ─────────────────────────────────────────────────────────
+async function handleIncoming(client, msg) {
+    try {
+        if (cfg.admin_mode) return;
+
+        // Hanya tangani private chat (DM)
+        const chatIdNum = Number(msg.chatId);
+        if (chatIdNum <= 0) return;
+
+        const senderKey = String(msg.senderId || chatIdNum);
+        const count     = (spamCount.get(senderKey) || 0) + 1;
+        spamCount.set(senderKey, count);
+
+        // Blokir jika spam > 5 pesan
+        if (count > 5) {
+            try {
+                const inputPeer = await client.getInputEntity(chatIdNum);
+                await client.invoke(new Api.contacts.Block({ id: inputPeer }));
+                await client.sendMessage(chatIdNum, {
+                    message:
+                        "╔══════════════════════════════╗\n" +
+                        "║  🚫  K A M U  D I B L O K I R  ║\n" +
+                        "╚══════════════════════════════╝\n\n" +
+                        "❌ Kamu telah **diblokir secara otomatis**\n" +
+                        "karena terlalu banyak spam pesan!\n\n" +
+                        "Bot tidak akan merespons lagi dari kamu.\n\n" +
+                        "📌 Ini adalah tindakan otomatis\nkarena melanggar batas pesan.",
+                    parseMode: 'md'
+                });
+                console.log(`🚫 User ${senderKey} diblokir (spam ${count}x)`);
+            } catch (blockErr) {
+                console.error('Gagal blokir user:', blockErr.message);
+            }
+            return;
+        }
+
+        // Peringatan saat mendekati batas
+        if (count === 5) {
+            await client.sendMessage(chatIdNum, {
+                message:
+                    "╔══════════════════════════════╗\n" +
+                    "║  ⚠️  P E R I N G A T A N !  ║\n" +
+                    "╚══════════════════════════════╝\n\n" +
+                    "😤 Ini sudah pesan ke-**5** kamu!\n\n" +
+                    "Satu pesan lagi = 🚫 **AUTO DIBLOKIR**!\n\n" +
+                    "Harap tunggu admin online ya, sabar dikit 🙏",
+                parseMode: 'md'
+            });
+            return;
+        }
+
+        // Auto-reply offline (hanya saat pesan ke-1 dan ke-3)
+        if (count === 1 || count === 3) {
+            const offlineMsg = OFFLINE_MSGS[Math.floor(Math.random() * OFFLINE_MSGS.length)];
+            await client.sendMessage(chatIdNum, {
+                message:   offlineMsg,
+                parseMode: 'md'
+            });
+        }
+
+    } catch (e) {
+        console.error('Incoming handler error:', e.message);
     }
 }
 
@@ -597,6 +944,9 @@ async function main() {
         process.exit(1);
     }
 
+    // Buat folder notes_media jika belum ada
+    if (!fs.existsSync(NOTES_DIR)) fs.mkdirSync(NOTES_DIR, { recursive: true });
+
     cfg = loadConfig();
 
     const client = new TelegramClient(
@@ -614,28 +964,30 @@ async function main() {
         process.exit(1);
     }
 
-    // Perbarui session
     fs.writeFileSync(SESSION_FILE, client.session.save(), 'utf8');
 
     const me = await client.getMe();
     console.log(`✅ Login sebagai: ${me.firstName} (@${me.username || 'no_username'})`);
 
-    // Handler perintah (hanya pesan keluar sendiri)
+    // Handler perintah (pesan keluar dari akun sendiri)
     client.addEventHandler(async (event) => {
-        try {
-            await handleCommand(client, event.message);
-        } catch (e) {
-            console.error('Handler error:', e.message);
-        }
+        try { await handleCommand(client, event.message); }
+        catch (e) { console.error('Command handler error:', e.message); }
     }, new NewMessage({ outgoing: true }));
 
-    console.log('✅ Command handler aktif.');
+    // Handler pesan masuk (untuk admin offline auto-reply)
+    client.addEventHandler(async (event) => {
+        try { await handleIncoming(client, event.message); }
+        catch (e) { console.error('Incoming handler error:', e.message); }
+    }, new NewMessage({ incoming: true }));
+
+    const adminStatus = cfg.admin_mode ? '🟢 Online' : '🔴 Offline (auto-reply aktif)';
+    console.log(`✅ Command handler aktif.`);
+    console.log(`👤 Mode admin: ${adminStatus}`);
     console.log('🚀 Auto post loop dimulai...\n');
 
-    // Jalankan auto post loop secara paralel
     autoPostLoop(client);
 
-    // Jaga proses tetap berjalan
     await new Promise(() => {});
 }
 
