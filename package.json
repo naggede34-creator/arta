@@ -1,0 +1,17 @@
+{
+  "name": "telegram-userbot",
+  "version": "2.0.0",
+  "description": "Telegram Userbot - Auto Post & Forward (Node.js)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "login": "node login.js"
+  },
+  "dependencies": {
+    "telegram": "^2.22.2",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
