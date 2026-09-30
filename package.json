@@ -1,17 +1,19 @@
 {
   "name": "telegram-userbot",
-  "version": "2.0.0",
-  "description": "Telegram Userbot - Auto Post & Forward (Node.js)",
+  "version": "3.0.0",
+  "description": "Telegram Userbot - Auto Post, Forward, Note, Rich Message & Clone Bot (Node.js)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "login": "node login.js"
+    "login": "node login.js",
+    "test": "node test/richmsg.test.js && node test/clone.test.js && node test/userbot.test.js && node test/assistant.test.js"
   },
   "dependencies": {
-    "telegram": "^2.22.2",
-    "dotenv": "^16.3.1"
+    "big-integer": "^1.6.52",
+    "dotenv": "^16.3.1",
+    "telegram": "^2.22.2"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
