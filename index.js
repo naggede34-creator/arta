@@ -38,7 +38,8 @@ async function main() {
         process.exit(1);
     }
 
-    const sessionStr = process.env.SESSION_STRING ||
+    const usingEnvSession = !!(process.env.SESSION_STRING || '').trim();
+    const sessionStr = (process.env.SESSION_STRING || '').trim() ||
         (fs.existsSync(SESSION_FILE) ? fs.readFileSync(SESSION_FILE, 'utf8').trim() : '');
     if (!sessionStr) {
         console.error('❌ Session tidak ditemukan!');
@@ -46,11 +47,36 @@ async function main() {
         process.exit(1);
     }
 
-    const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 5 });
-    await client.connect();
-    if (!await client.isUserAuthorized()) {
-        console.error('❌ Session tidak valid / expired!');
-        console.error('Jalankan: npm run login untuk login ulang.');
+    let session;
+    try {
+        session = new StringSession(sessionStr);
+    } catch (e) {
+        console.error('❌ Isi SESSION_STRING / session.txt rusak atau tidak lengkap.');
+        console.error(`   (${e.message})`);
+        if (usingEnvSession) {
+            console.error('   Cek variabel SESSION_STRING di .env — pastikan tidak ada baris baru/spasi/tanda kutip yang ikut ter-copy.');
+        } else {
+            console.error(`   Hapus file rusak: ${SESSION_FILE}`);
+        }
+        console.error('   Lalu jalankan ulang: npm run login');
+        process.exit(1);
+    }
+
+    const client = new TelegramClient(session, API_ID, API_HASH, { connectionRetries: 5 });
+    try {
+        await client.connect();
+    } catch (e) {
+        console.error('❌ Gagal konek ke server Telegram:', e.message);
+        console.error('   Cek koneksi internet server, atau API_ID/API_HASH di .env.');
+        process.exit(1);
+    }
+
+    let authorized = false;
+    try { authorized = await client.isUserAuthorized(); } catch (e) { authorized = false; }
+    if (!authorized) {
+        console.error('❌ Session tidak valid / sudah expired / logout dari HP!');
+        console.error(`   Hapus ${usingEnvSession ? 'SESSION_STRING di .env' : SESSION_FILE} lalu jalankan: npm run login`);
+        try { await client.disconnect(); } catch (_) { /* abaikan */ }
         process.exit(1);
     }
     fs.writeFileSync(SESSION_FILE, client.session.save(), 'utf8');
